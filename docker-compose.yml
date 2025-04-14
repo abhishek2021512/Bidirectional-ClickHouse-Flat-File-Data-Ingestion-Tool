@@ -28,3 +28,4 @@ services:
       - backend
 volumes:
   clickhouse_data:
+  
