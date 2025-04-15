@@ -341,3 +341,113 @@ function showResult(message, isError = false) {
     resultDiv.textContent = message;
     resultDiv.className = isError ? 'error' : '';
 }
+async function addJoinCondition() {
+    const container = document.getElementById('join-conditions');
+    const div = document.createElement('div');
+    div.className = 'join-condition';
+    div.innerHTML = `
+        <select class="join-type" onchange="updateJoinPreview()">
+            <option value="INNER">INNER JOIN</option>
+            <option value="LEFT">LEFT JOIN</option>
+            <option value="RIGHT">RIGHT JOIN</option>
+        </select>
+        <span class="main-table-preview"></span>
+        <select class="join-table-select" onchange="loadJoinColumns(this)"></select>
+        <select class="join-column-select"></select>
+        <button onclick="this.parentElement.remove()">Remove</button>
+    `;
+    container.appendChild(div);
+    await populateJoinTables(div.querySelector('.join-table-select'));
+}
+
+async function populateJoinTables(selectElement) {
+    try {
+        const response = await fetch(`${BASE_URL}/tables`);
+        if (!response.ok) throw new Error('Failed to fetch tables');
+        const tables = await response.json();
+        
+        selectElement.innerHTML = `
+            <option value="">Select Join Table</option>
+            ${tables.map(t => `<option value="${t}">${t}</option>`).join('')}
+        `;
+    } catch (error) {
+        console.error('Error loading tables:', error);
+        showResult(`Error loading tables: ${error.message}`, true);
+    }
+}
+
+async function loadJoinColumns(selectElement) {
+    const table = selectElement.value;
+    const row = selectElement.closest('.join-condition');
+    const columnSelect = row.querySelector('.join-column-select');
+    
+    try {
+        const response = await fetch(
+            `${BASE_URL}/columns?source=clickhouse&tableName=${encodeURIComponent(table)}`
+        );
+        if (!response.ok) throw new Error('Failed to fetch columns');
+        const columns = await response.json();
+        
+        columnSelect.innerHTML = columns.map(c => 
+            `<option value="${c}">${c}</option>`
+        ).join('');
+    } catch (error) {
+        console.error('Error loading columns:', error);
+        showResult(`Error loading columns: ${error.message}`, true);
+    }
+}
+
+function updateJoinPreview() {
+    document.querySelectorAll('.join-condition').forEach(row => {
+        const mainTable = document.getElementById('table-name').value;
+        const joinType = row.querySelector('.join-type').value;
+        const joinTable = row.querySelector('.join-table-select').value;
+        row.querySelector('.main-table-preview').textContent = 
+            `${mainTable} ${joinType} JOIN ${joinTable} ON `;
+    });
+}
+async function populateJoinTables(selectElement) {
+    try {
+        // Clear existing options first
+        selectElement.innerHTML = '<option value="">Loading tables...</option>';
+        
+        const response = await fetch(`${BASE_URL}/tables`);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const tables = await response.json();
+        
+        selectElement.innerHTML = '<option value="">Select Table</option>' +
+            tables.map(t => `<option value="${t}">${t}</option>`).join('');
+            
+    } catch (error) {
+        console.error('Table load failed:', error);
+        selectElement.innerHTML = '<option value="">Error loading tables</option>';
+    }
+}
+
+async function loadJoinColumns(selectElement) {
+    const table = selectElement.value;
+    const columnSelect = selectElement.closest('.join-condition').querySelector('.join-column-select');
+    
+    if (!table) {
+        columnSelect.innerHTML = '<option value="">Select table first</option>';
+        return;
+    }
+
+    try {
+        columnSelect.innerHTML = '<option value="">Loading columns...</option>';
+        const response = await fetch(
+            `${BASE_URL}/columns?source=clickhouse&tableName=${encodeURIComponent(table)}`
+        );
+        
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const columns = await response.json();
+        
+        columnSelect.innerHTML = columns.length > 0 
+            ? columns.map(c => `<option value="${c}">${c}</option>`).join('')
+            : '<option value="">No columns found</option>';
+            
+    } catch (error) {
+        console.error('Column load failed:', error);
+        columnSelect.innerHTML = '<option value="">Error loading columns</option>';
+    }
+}
