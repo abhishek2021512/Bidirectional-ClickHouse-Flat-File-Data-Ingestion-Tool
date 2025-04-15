@@ -34,9 +34,9 @@ public class IngestionController {
     }
 
     @GetMapping("/columns")
-    public ResponseEntity<?> getColumns(@RequestParam String source, 
-                                       @RequestParam(required = false) String tableName,
-                                       @RequestParam(required = false) String filePath) {
+    public ResponseEntity<?> getColumns(@RequestParam String source,
+            @RequestParam(required = false) String tableName,
+            @RequestParam(required = false) String filePath) {
         try {
             if ("clickhouse".equals(source)) {
                 if (tableName == null || tableName.isEmpty()) {
@@ -84,7 +84,7 @@ public class IngestionController {
                 // Convert List<Map<String, String>> to List<JoinCondition>
                 List<JoinCondition> joinConditions = convertToJoinConditions(request.getJoinConditions());
                 recordCount = clickHouseService.executeIngestion(
-                        request.getTableName(), request.getColumns(), 
+                        request.getTableName(), request.getColumns(),
                         outputPath, joinConditions);
             } else if ("flatfile".equals(request.getSource())) {
                 if (request.getFilePath() == null || request.getFilePath().isEmpty()) {
@@ -143,8 +143,8 @@ public class IngestionController {
                 String query = clickHouseService.buildQuery(
                         request.getTableName(), request.getColumns(), joinConditions) + " LIMIT 100";
                 try (java.sql.Connection conn = clickHouseService.getConnection(request.getJwtToken());
-                     Statement stmt = conn.createStatement();
-                     ResultSet rs = stmt.executeQuery(query)) {
+                        Statement stmt = conn.createStatement();
+                        ResultSet rs = stmt.executeQuery(query)) {
                     List<Map<String, Object>> rows = new ArrayList<>();
                     while (rs.next()) {
                         Map<String, Object> row = new HashMap<>();
@@ -165,11 +165,12 @@ public class IngestionController {
                 }
                 List<Map<String, String>> rows = new ArrayList<>();
                 try (org.apache.commons.csv.CSVParser parser = org.apache.commons.csv.CSVParser.parse(
-                        file, java.nio.charset.StandardCharsets.UTF_8, 
+                        file, java.nio.charset.StandardCharsets.UTF_8,
                         org.apache.commons.csv.CSVFormat.DEFAULT.withFirstRecordAsHeader())) {
                     int count = 0;
                     for (org.apache.commons.csv.CSVRecord record : parser) {
-                        if (count >= 100) break;
+                        if (count >= 100)
+                            break;
                         Map<String, String> row = new HashMap<>();
                         for (String col : request.getColumns()) {
                             row.put(col, record.get(col));
@@ -188,18 +189,30 @@ public class IngestionController {
     }
 
     // Helper method to convert List<Map<String, String>> to List<JoinCondition>
+    // Updated helper method in IngestionController.java
     private List<JoinCondition> convertToJoinConditions(List<Map<String, String>> joinConditionsMap) {
         if (joinConditionsMap == null) {
             return Collections.emptyList();
         }
         List<JoinCondition> joinConditions = new ArrayList<>();
         for (Map<String, String> map : joinConditionsMap) {
-            String table = map.get("table");
-            String key = map.get("key");
-            if (table != null && key != null) {
-                joinConditions.add(new JoinCondition(table, key));
+            String joinType = map.get("joinType");
+            String mainTable = map.get("mainTable");
+            String mainColumn = map.get("mainColumn");
+            String joinTable = map.get("joinTable");
+            String joinColumn = map.get("joinColumn");
+
+            if (joinType != null && mainTable != null && mainColumn != null
+                    && joinTable != null && joinColumn != null) {
+                joinConditions.add(new JoinCondition(
+                        joinType,
+                        mainTable,
+                        mainColumn,
+                        joinTable,
+                        joinColumn));
             }
         }
         return joinConditions;
     }
+    
 }

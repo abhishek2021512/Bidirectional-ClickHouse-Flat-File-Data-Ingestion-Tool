@@ -32,29 +32,29 @@ public class ClickHouseService {
         }
     }
 
-    public List<String> getTables() throws SQLException {
-        try (Connection conn = getConnection(null);
-             Statement stmt = conn.createStatement();
-             ResultSet rs = stmt.executeQuery("SHOW TABLES")) {
-            List<String> tables = new ArrayList<>();
-            while (rs.next()) {
-                tables.add(rs.getString(1));
-            }
-            return tables;
-        }
-    }
+    // public List<String> getTables() throws SQLException {
+    //     try (Connection conn = getConnection(null);
+    //          Statement stmt = conn.createStatement();
+    //          ResultSet rs = stmt.executeQuery("SHOW TABLES")) {
+    //         List<String> tables = new ArrayList<>();
+    //         while (rs.next()) {
+    //             tables.add(rs.getString(1));
+    //         }
+    //         return tables;
+    //     }
+    // }
 
-    public List<String> getColumns(String tableName) throws SQLException {
-        try (Connection conn = getConnection(null);
-             Statement stmt = conn.createStatement();
-             ResultSet rs = stmt.executeQuery("DESCRIBE TABLE " + tableName)) {
-            List<String> columns = new ArrayList<>();
-            while (rs.next()) {
-                columns.add(rs.getString("name"));
-            }
-            return columns;
-        }
-    }
+    // public List<String> getColumns(String tableName) throws SQLException {
+    //     try (Connection conn = getConnection(null);
+    //          Statement stmt = conn.createStatement();
+    //          ResultSet rs = stmt.executeQuery("DESCRIBE TABLE " + tableName)) {
+    //         List<String> columns = new ArrayList<>();
+    //         while (rs.next()) {
+    //             columns.add(rs.getString("name"));
+    //         }
+    //         return columns;
+    //     }
+    // }
 
     public Map<String, List<String>> getColumnsForMultipleTables(List<String> tables) throws SQLException {
         Map<String, List<String>> result = new HashMap<>();
@@ -64,30 +64,40 @@ public class ClickHouseService {
         return result;
     }
 
-    public String buildQuery(String tableName, List<String> columns, List<JoinCondition> joinConditions) {
-        // Sanitize column names for ClickHouse
-        List<String> sanitizedColumns = columns.stream()
-                .map(col -> {
-                    if (col.matches("^[a-zA-Z0-9_]+$")) {
-                        return col;
-                    } else {
-                        return "`" + col.replace("`", "``") + "`";
-                    }
-                })
-                .collect(Collectors.toList());
+    public String buildQuery(String mainTable, List<String> columns, List<JoinCondition> joinConditions) {
+        StringBuilder query = new StringBuilder("SELECT ");
         
-        String columnsStr = String.join(",", sanitizedColumns);
-        StringBuilder query = new StringBuilder("SELECT " + columnsStr + " FROM " + tableName);
+        // Handle column selection from multiple tables
+        List<String> qualifiedColumns = columns.stream()
+            .map(col -> {
+                if (col.contains(".")) {
+                    String[] parts = col.split("\\.");
+                    return sanitize(parts[0]) + "." + sanitize(parts[1]);
+                }
+                return sanitize(mainTable) + "." + sanitize(col);
+            })
+            .collect(Collectors.toList());
+        
+        query.append(String.join(", ", qualifiedColumns))
+             .append(" FROM ").append(sanitize(mainTable));
+    
         for (JoinCondition jc : joinConditions) {
-            String joinTable = jc.getTable().matches("^[a-zA-Z0-9_]+$") ? 
-                              jc.getTable() : "`" + jc.getTable().replace("`", "``") + "`";
-            String joinKey = jc.getKey().matches("^[a-zA-Z0-9_]+$") ? 
-                            jc.getKey() : "`" + jc.getKey().replace("`", "``") + "`";
-            query.append(" JOIN ").append(joinTable)
-                 .append(" ON ").append(tableName).append(".").append(joinKey)
-                 .append("=").append(joinTable).append(".").append(joinKey);
+            query.append(" ")
+                 .append(jc.getjoinType()).append(" JOIN ")
+                 .append(sanitize(jc.getjoinTable()))
+                 .append(" ON ")
+                 .append(sanitize(jc.getMainTable())).append(".").append(sanitize(jc.getmaincolumn()))
+                 .append(" = ")
+                 .append(sanitize(jc.getjoinTable())).append(".").append(sanitize(jc.getjoincolumn()));
         }
+        
         return query.toString();
+    }
+    
+    private String sanitize(String identifier) {
+        return identifier.matches("^[a-zA-Z0-9_]+$") ? 
+               identifier : 
+               "`" + identifier.replace("`", "``") + "`";
     }
 
     public long executeIngestion(String tableName, List<String> columns, String outputPath, 
@@ -96,19 +106,35 @@ public class ClickHouseService {
         try (Connection conn = getConnection(null);
              Statement stmt = conn.createStatement();
              ResultSet rs = stmt.executeQuery(query)) {
+            
             try (java.io.PrintWriter writer = new java.io.PrintWriter(outputPath)) {
-                // Write original column names as CSV header
-                writer.println(String.join(",", columns));
+                ResultSetMetaData metaData = rs.getMetaData();
+                int columnCount = metaData.getColumnCount();
+                
+                // Get column names from result set metadata
+                List<String> outputColumns = new ArrayList<>();
+                for (int i = 1; i <= columnCount; i++) {
+                    outputColumns.add(metaData.getColumnName(i));
+                }
+                
+                // Write CSV header using actual column names from query result
+                writer.println(String.join(",", outputColumns));
+                
                 long count = 0;
                 while (rs.next()) {
                     List<String> values = new ArrayList<>();
-                    for (int i = 1; i <= columns.size(); i++) {
+                    for (int i = 1; i <= columnCount; i++) {
                         String value = rs.getString(i);
-                        // Escape commas and quotes in values
-                        if (value != null && (value.contains(",") || value.contains("\""))) {
-                            value = "\"" + value.replace("\"", "\"\"") + "\"";
+                        // Handle null values and escape special characters
+                        if (value == null) {
+                            values.add("");
+                        } else {
+                            // Escape quotes and commas
+                            if (value.contains("\"") || value.contains(",")) {
+                                value = "\"" + value.replace("\"", "\"\"") + "\"";
+                            }
+                            values.add(value);
                         }
-                        values.add(value != null ? value : "");
                     }
                     writer.println(String.join(",", values));
                     count++;
@@ -119,4 +145,30 @@ public class ClickHouseService {
             }
         }
     }
+    // In ClickHouseService.java
+public List<String> getTables() throws SQLException {
+    try (Connection conn = getConnection(null);
+         Statement stmt = conn.createStatement();
+         ResultSet rs = stmt.executeQuery("SHOW TABLES")) {
+        List<String> tables = new ArrayList<>();
+        while (rs.next()) {
+            tables.add(rs.getString(1));
+        }
+        return tables;
+    }
+}
+
+public List<String> getColumns(String tableName) throws SQLException {
+    try (Connection conn = getConnection(null);
+         Statement stmt = conn.createStatement();
+         ResultSet rs = stmt.executeQuery(
+             "SELECT name FROM system.columns WHERE table = '" + tableName + "'"
+         )) {
+        List<String> columns = new ArrayList<>();
+        while (rs.next()) {
+            columns.add(rs.getString("name"));
+        }
+        return columns;
+    }
+}
 }
