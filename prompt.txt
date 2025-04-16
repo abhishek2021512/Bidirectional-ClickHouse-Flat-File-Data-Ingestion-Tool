@@ -1,0 +1,1094 @@
+Integration Assignment: Bidirectional ClickHouse & Flat File Data Ingestion Tool
+1. Objective:
+Develop a web-based application with a simple user interface (UI) that facilitates data ingestion between a ClickHouse database and the Flat File platform. The application must support bidirectional data flow (ClickHouse to Flat File and Flat File to ClickHouse), handle JWT token-based authentication for ClickHouse as a source, allow users to select specific columns for ingestion, and report the total number of records processed upon completion.
+2. Core Requirements:
+● Application Type: Web application (backend logic + frontend UI).
+● Bidirectional Flow: Implement both:
+○ ClickHouse -> Flat File ingestion.
+○ Flat File -> Clickhouse ingestion.
+● Source Selection: UI must allow users to choose the data source ("ClickHouse" or "Flat File").
+● ClickHouse Connection (as Source):
+○ UI Configuration: Inputs for Host, Port (e.g., 9440/8443 for https, 9000/8123 for http), Database, User, and JWT Token.
+○ Authentication: Use the provided JWT token via a compatible ClickHouse client library.
+○ Client Library: Use a client from the official list: https://github.com/ClickHouse (Use any language of your choice - Golang, Python, Java).
+● Flat File Integration:
+○ UI Configuration : Local Flat File name, Delimiters
+○ Client Library - Use any IO library.
+● Schema Discovery & Column Selection:
+○ Connect to the source and fetch the list of available tables (ClickHouse) or the schema of the Flat File data.
+○ Display column names in the UI with selection controls (e.g., checkboxes).
+● Ingestion Process:
+○ Execute data transfer based on user selections.
+○ Implement efficient data handling (batching/streaming recommended).
+● Completion Reporting: Display the total count of ingested records upon success.
+● Error Handling: Implement basic error handling (connection, auth, query, ingestion) and display user-friendly messages Multi-Table Join (ClickHouse Source):
+○ Allow selection of multiple ClickHouse tables.
+○ UI element to input JOIN key(s)/conditions.
+○ Backend logic to construct and execute the JOIN query for ingestion. Technical Considerations:
+● Backend: Go or Java preferable. But any language accepted.
+● Frontend: Simple HTML/CSS/JS, React, Vue, Angular, or server-side templates.
+● ClickHouse Instance: Local (Docker) or cloud-based. Load example datasets for testing.
+● JWT Handling: Use libraries to manage JWTs if needed, primarily pass the token to the ClickHouse client.
+● Data Type Mapping: Consider potential type mismatches between ClickHouse and Flat File/CSV.
+7. Testing Requirements:
+● Datasets: Use ClickHouse example datasets like uk_price_paid and ontime (https://clickhouse.com/docs/getting-started/example-datasets).
+● Test Cases:
+1. Single ClickHouse table -> Flat File (selected columns). Verify count.
+2. Flat File (CSV upload) -> New ClickHouse table (selected columns). Verify
+count & data.
+3. (Bonus) Joined ClickHouse tables -> Flat File. Verify count.
+4. Test connection/authentication failures.
+5. (Optional) Test data preview. understnad these requirements and help me develop backend first in java that uses whatever requirements are asked also help me setup docker in a way a person is using docker for first time while making java files also tell about files structures to everything nesccessary to make it accurate
+
+package com.ingestion.controller;
+
+import com.ingestion.model.IngestionRequest;
+import com.ingestion.model.JoinCondition;
+import com.ingestion.service.ClickHouseService;
+import com.ingestion.service.FlatFileService;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
+
+import java.io.File;
+import java.io.IOException;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Statement;
+import java.util.*;
+
+@RestController
+@RequestMapping("/ingestion")
+public class IngestionController {
+    @Autowired
+    private ClickHouseService clickHouseService;
+    @Autowired
+    private FlatFileService flatFileService;
+
+    @GetMapping("/tables")
+    public ResponseEntity<?> getTables() {
+        try {
+            return ResponseEntity.ok(clickHouseService.getTables());
+        } catch (SQLException e) {
+            return ResponseEntity.badRequest().body("Error fetching tables: " + e.getMessage());
+        }
+    }
+
+    @GetMapping("/columns")
+    public ResponseEntity<?> getColumns(@RequestParam String source,
+                                       @RequestParam(required = false) String tableName,
+                                       @RequestParam(required = false) String filePath) {
+        try {
+            if ("clickhouse".equals(source)) {
+                if (tableName == null || tableName.isEmpty()) {
+                    return ResponseEntity.badRequest().body("Table name is required for ClickHouse source");
+                }
+                return ResponseEntity.ok(clickHouseService.getColumns(tableName));
+            } else if ("flatfile".equals(source)) {
+                if (filePath == null || filePath.isEmpty()) {
+                    return ResponseEntity.badRequest().body("File path is required for Flat File source");
+                }
+                File file = new File(filePath);
+                if (!file.exists()) {
+                    return ResponseEntity.badRequest().body("File does not exist: " + filePath);
+                }
+                return ResponseEntity.ok(flatFileService.getColumns(filePath));
+            }
+            return ResponseEntity.badRequest().body("Invalid source");
+        } catch (Exception e) {
+            return ResponseEntity.badRequest().body("Error fetching columns: " + e.getMessage());
+        }
+    }
+
+    @PostMapping("/columns/multiple")
+    public ResponseEntity<?> getColumnsForMultipleTables(@RequestBody List<String> tables) {
+        try {
+            return ResponseEntity.ok(clickHouseService.getColumnsForMultipleTables(tables));
+        } catch (SQLException e) {
+            return ResponseEntity.badRequest().body("Error fetching columns: " + e.getMessage());
+        }
+    }
+
+    @PostMapping("/start")
+    public ResponseEntity<?> startIngestion(@RequestBody IngestionRequest request) {
+        try {
+            long recordCount;
+            if ("clickhouse".equals(request.getSource())) {
+                if (request.getTableName() == null || request.getTableName().isEmpty()) {
+                    return ResponseEntity.badRequest().body("Table name is required");
+                }
+                if (request.getFilePath() == null || request.getFilePath().isEmpty()) {
+                    return ResponseEntity.badRequest().body("Output file path is required");
+                }
+                if (request.getColumns() == null || request.getColumns().isEmpty()) {
+                    return ResponseEntity.badRequest().body("At least one column is required");
+                }
+                String outputFileName = new File(request.getFilePath()).getName();
+                String outputPath = "/app/uploads/" + outputFileName;
+                List<JoinCondition> joinConditions = convertToJoinConditions(request.getJoinConditions());
+                recordCount = clickHouseService.executeIngestion(
+                        request.getTableName(), request.getColumns(),
+                        outputPath, joinConditions);
+            } else if ("flatfile".equals(request.getSource())) {
+                if (request.getFilePath() == null || request.getFilePath().isEmpty()) {
+                    return ResponseEntity.badRequest().body("Input file path is required");
+                }
+                if (request.getTableName() == null || request.getTableName().isEmpty()) {
+                    return ResponseEntity.badRequest().body("Target table name is required");
+                }
+                if (request.getFlatFileColumns() == null || request.getFlatFileColumns().isEmpty()) {
+                    return ResponseEntity.badRequest().body("At least one column is required");
+                }
+                File file = new File(request.getFilePath());
+                if (!file.exists()) {
+                    return ResponseEntity.badRequest().body("Input file does not exist: " + request.getFilePath());
+                }
+                try (java.sql.Connection conn = clickHouseService.getConnection(request.getJwtToken())) {
+                    recordCount = flatFileService.ingestToClickHouse(
+                            request.getFilePath(), request.getFlatFileColumns(),
+                            request.getTableName(), conn);
+                }
+            } else {
+                return ResponseEntity.badRequest().body("Invalid source");
+            }
+            return ResponseEntity.ok("Ingestion completed. Records processed: " + recordCount);
+        } catch (Exception e) {
+            return ResponseEntity.badRequest().body("Ingestion failed: " + e.getMessage());
+        }
+    }
+
+    @PostMapping("/upload")
+    public ResponseEntity<?> uploadFile(@RequestParam("file") MultipartFile file) {
+        try {
+            if (file == null || file.isEmpty()) {
+                return ResponseEntity.badRequest().body("No file uploaded");
+            }
+            File uploadDir = new File("/app/uploads");
+            if (!uploadDir.exists()) {
+                if (!uploadDir.mkdirs()) {
+                    return ResponseEntity.badRequest().body("Failed to create uploads directory");
+                }
+            }
+            String fileName = file.getOriginalFilename();
+            if (fileName == null || fileName.isEmpty()) {
+                return ResponseEntity.badRequest().body("Invalid file name");
+            }
+            File destFile = new File(uploadDir, fileName);
+            file.transferTo(destFile);
+            return ResponseEntity.ok(destFile.getAbsolutePath());
+        } catch (IOException e) {
+            return ResponseEntity.badRequest().body("File upload failed: " + e.getMessage());
+        }
+    }
+
+    @PostMapping("/preview")
+    public ResponseEntity<?> previewData(@RequestBody IngestionRequest request) {
+        try {
+            if ("clickhouse".equals(request.getSource())) {
+                if (request.getTableName() == null || request.getTableName().isEmpty()) {
+                    return ResponseEntity.badRequest().body("Table name is required");
+                }
+                if (request.getColumns() == null || request.getColumns().isEmpty()) {
+                    return ResponseEntity.badRequest().body("At least one column is required");
+                }
+                List<JoinCondition> joinConditions = convertToJoinConditions(request.getJoinConditions());
+                String query = clickHouseService.buildQuery(
+                        request.getTableName(), request.getColumns(), joinConditions) + " LIMIT 100";
+                System.out.println("Preview query: " + query); // Debug log
+                try (java.sql.Connection conn = clickHouseService.getConnection(request.getJwtToken());
+                     Statement stmt = conn.createStatement();
+                     ResultSet rs = stmt.executeQuery(query)) {
+                    List<Map<String, Object>> rows = new ArrayList<>();
+                    while (rs.next()) {
+                        Map<String, Object> row = new HashMap<>();
+                        for (Map<String, String> col : request.getColumns()) {
+                            String colName = col.get("column");
+                            try {
+                                Object value = rs.getObject(colName);
+                                row.put(colName, value != null ? value : "");
+                            } catch (SQLException e) {
+                                System.err.println("Error fetching column " + colName + ": " + e.getMessage());
+                            }
+                        }
+                        if (!row.isEmpty()) {
+                            rows.add(row);
+                        }
+                    }
+                    System.out.println("Preview rows fetched: " + rows.size()); // Debug log
+                    return ResponseEntity.ok(rows);
+                } catch (SQLException e) {
+                    return ResponseEntity.badRequest().body("Preview failed: " + e.getMessage() +
+                            ". Check table names, column names, and join conditions for correctness.");
+                }
+            } else if ("flatfile".equals(request.getSource())) {
+                if (request.getFilePath() == null || request.getFilePath().isEmpty()) {
+                    return ResponseEntity.badRequest().body("File path is required");
+                }
+                if (request.getFlatFileColumns() == null || request.getFlatFileColumns().isEmpty()) {
+                    return ResponseEntity.badRequest().body("At least one column is required");
+                }
+                File file = new File(request.getFilePath());
+                if (!file.exists()) {
+                    return ResponseEntity.badRequest().body("File does not exist: " + request.getFilePath());
+                }
+                List<Map<String, String>> rows = new ArrayList<>();
+                try (org.apache.commons.csv.CSVParser parser = org.apache.commons.csv.CSVParser.parse(
+                        file, java.nio.charset.StandardCharsets.UTF_8,
+                        org.apache.commons.csv.CSVFormat.DEFAULT.withFirstRecordAsHeader())) {
+                    int count = 0;
+                    for (org.apache.commons.csv.CSVRecord record : parser) {
+                        if (count >= 100) break;
+                        Map<String, String> row = new HashMap<>();
+                        for (String col : request.getFlatFileColumns()) {
+                            row.put(col, record.get(col));
+                        }
+                        rows.add(row);
+                        count++;
+                    }
+                    return ResponseEntity.ok(rows);
+                }
+            } else {
+                return ResponseEntity.badRequest().body("Invalid source");
+            }
+        } catch (Exception e) {
+            return ResponseEntity.badRequest().body("Preview failed: " + e.getMessage());
+        }
+    }
+
+    private List<JoinCondition> convertToJoinConditions(List<Map<String, String>> joinConditionsMap) {
+        if (joinConditionsMap == null) {
+            return Collections.emptyList();
+        }
+        List<JoinCondition> joinConditions = new ArrayList<>();
+        for (Map<String, String> map : joinConditionsMap) {
+            String table = map.get("table");
+            String key = map.get("key");
+            if (table != null && key != null) {
+                joinConditions.add(new JoinCondition(table, key));
+            }
+        }
+        return joinConditions;
+    }
+} package com.ingestion.model;
+
+import java.util.List;
+import java.util.Map;
+
+public class IngestionRequest {
+    private String source;
+    private String tableName;
+    private List<Map<String, String>> columns; // For ClickHouse: [{table, column}]
+    private List<String> flatFileColumns; // For flat file: [column]
+    private String filePath;
+    private String jwtToken;
+    private List<Map<String, String>> joinConditions;
+
+    // Getters and setters
+    public String getSource() { return source; }
+    public void setSource(String source) { this.source = source; }
+    public String getTableName() { return tableName; }
+    public void setTableName(String tableName) { this.tableName = tableName; }
+    public List<Map<String, String>> getColumns() { return columns; }
+    public void setColumns(List<Map<String, String>> columns) { this.columns = columns; }
+    public List<String> getFlatFileColumns() { return flatFileColumns; }
+    public void setFlatFileColumns(List<String> flatFileColumns) { this.flatFileColumns = flatFileColumns; }
+    public String getFilePath() { return filePath; }
+    public void setFilePath(String filePath) { this.filePath = filePath; }
+    public String getJwtToken() { return jwtToken; }
+    public void setJwtToken(String jwtToken) { this.jwtToken = jwtToken; }
+    public List<Map<String, String>> getJoinConditions() { return joinConditions; }
+    public void setJoinConditions(List<Map<String, String>> joinConditions) { this.joinConditions = joinConditions; }
+}package com.ingestion.model;
+
+public class JoinCondition {
+    private String table;
+    private String key;
+
+    public JoinCondition(String table, String key) {
+        this.table = table;
+        this.key = key;
+    }
+
+    // Getters and setters
+    public String getTable() { return table; }
+    public void setTable(String table) { this.table = table; }
+    public String getKey() { return key; }
+    public void setKey(String key) { this.key = key; }
+}package com.ingestion.service;
+
+import com.ingestion.model.JoinCondition;
+import org.springframework.stereotype.Service;
+
+import java.sql.*;
+import java.util.*;
+import java.util.stream.Collectors;
+
+@Service
+public class ClickHouseService {
+    private static final String URL = "jdbc:clickhouse://clickhouse:8123/default";
+    private static final String USER = "default";
+    private static final String PASSWORD = "";
+
+    public Connection getConnection(String jwtToken) throws SQLException {
+        Properties properties = new Properties();
+        properties.setProperty("user", USER);
+        if (jwtToken != null && !jwtToken.isEmpty()) {
+            properties.setProperty("password", jwtToken);
+        } else if (!PASSWORD.isEmpty()) {
+            properties.setProperty("password", PASSWORD);
+        }
+        try {
+            Connection conn = DriverManager.getConnection(URL, properties);
+            if (conn == null || conn.isClosed()) {
+                throw new SQLException("Failed to establish ClickHouse connection");
+            }
+            return conn;
+        } catch (SQLException e) {
+            throw new SQLException("Cannot connect to ClickHouse at " + URL + ": " + e.getMessage(), e);
+        }
+    }
+
+    public List<String> getTables() throws SQLException {
+        try (Connection conn = getConnection(null);
+             Statement stmt = conn.createStatement();
+             ResultSet rs = stmt.executeQuery("SHOW TABLES")) {
+            List<String> tables = new ArrayList<>();
+            while (rs.next()) {
+                tables.add(rs.getString(1));
+            }
+            return tables;
+        }
+    }
+
+    public List<String> getColumns(String tableName) throws SQLException {
+        try (Connection conn = getConnection(null);
+             Statement stmt = conn.createStatement();
+             ResultSet rs = stmt.executeQuery("DESCRIBE TABLE " + tableName)) {
+            List<String> columns = new ArrayList<>();
+            while (rs.next()) {
+                columns.add(rs.getString("name"));
+            }
+            return columns;
+        }
+    }
+
+    public Map<String, List<String>> getColumnsForMultipleTables(List<String> tables) throws SQLException {
+        Map<String, List<String>> result = new HashMap<>();
+        for (String table : tables) {
+            result.put(table, getColumns(table));
+        }
+        return result;
+    }
+
+    public String buildQuery(String tableName, List<Map<String, String>> columns, List<JoinCondition> joinConditions) {
+        // Sanitize table name
+        String sanitizedTableName = tableName.matches("^[a-zA-Z0-9_]+$") ?
+                                   tableName : "`" + tableName.replace("`", "``") + "`";
+        // Build column list with table aliases
+        Map<String, String> tableAliases = new HashMap<>();
+        tableAliases.put(tableName, "t0");
+        List<String> sanitizedColumns = new ArrayList<>();
+        for (Map<String, String> col : columns) {
+            String colTable = col.get("table");
+            String colName = col.get("column");
+            String alias = tableAliases.getOrDefault(colTable, "");
+            if (alias.isEmpty()) {
+                throw new IllegalArgumentException("Unknown table in column selection: " + colTable);
+            }
+            String sanitizedCol = colName.matches("^[a-zA-Z0-9_]+$") ? colName : "`" + colName.replace("`", "``") + "`";
+            sanitizedColumns.add(alias + "." + sanitizedCol + " AS `" + colName + "`");
+        }
+
+        String columnsStr = String.join(",", sanitizedColumns);
+        StringBuilder query = new StringBuilder("SELECT " + columnsStr + " FROM " + sanitizedTableName + " AS t0");
+
+        // Add joins with unique aliases
+        for (int i = 0; i < joinConditions.size(); i++) {
+            JoinCondition jc = joinConditions.get(i);
+            String joinTable = jc.getTable().matches("^[a-zA-Z0-9_]+$") ?
+                              jc.getTable() : "`" + jc.getTable().replace("`", "``") + "`";
+            String joinKey = jc.getKey().matches("^[a-zA-Z0-9_]+$") ?
+                            jc.getKey() : "`" + jc.getKey().replace("`", "``") + "`";
+            String tableAlias = "t" + (i + 1);
+            tableAliases.put(jc.getTable(), tableAlias);
+            query.append(" LEFT JOIN ").append(joinTable)
+                 .append(" AS ").append(tableAlias)
+                 .append(" ON t0.").append(joinKey)
+                 .append("=").append(tableAlias).append(".").append(joinKey);
+        }
+
+        System.out.println("Generated query: " + query); // Debug log
+        return query.toString();
+    }
+
+    public long executeIngestion(String tableName, List<Map<String, String>> columns, String outputPath,
+                                List<JoinCondition> joinConditions) throws SQLException {
+        String query = buildQuery(tableName, columns, joinConditions);
+        try (Connection conn = getConnection(null);
+             Statement stmt = conn.createStatement();
+             ResultSet rs = stmt.executeQuery(query)) {
+            try (java.io.PrintWriter writer = new java.io.PrintWriter(outputPath)) {
+                // Write header with column names only
+                writer.println(columns.stream()
+                        .map(c -> c.get("column"))
+                        .collect(Collectors.joining(",")));
+                long count = 0;
+                while (rs.next()) {
+                    List<String> values = new ArrayList<>();
+                    for (Map<String, String> col : columns) {
+                        String colName = col.get("column");
+                        String value = rs.getString(colName);
+                        if (value != null && (value.contains(",") || value.contains("\""))) {
+                            value = "\"" + value.replace("\"", "\"\"") + "\"";
+                        }
+                        values.add(value != null ? value : "");
+                    }
+                    writer.println(String.join(",", values));
+                    count++;
+                }
+                System.out.println("Wrote " + count + " rows to " + outputPath); // Debug log
+                return count;
+            } catch (java.io.IOException e) {
+                throw new SQLException("Failed to write CSV: " + e.getMessage(), e);
+            }
+        }
+    }
+}package com.ingestion.service;
+
+import org.apache.commons.csv.CSVFormat;
+import org.apache.commons.csv.CSVParser;
+import org.apache.commons.csv.CSVRecord;
+import org.springframework.stereotype.Service;
+
+import java.io.File;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.SQLException;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.stream.Collectors;
+
+@Service
+public class FlatFileService {
+
+    public List<String> getColumns(String filePath) throws IOException {
+        File file = new File(filePath);
+        if (!file.exists()) {
+            throw new IOException("File not found: " + filePath);
+        }
+        try (CSVParser parser = CSVParser.parse(file, StandardCharsets.UTF_8, 
+                CSVFormat.DEFAULT.withFirstRecordAsHeader())) {
+            List<String> headers = new ArrayList<>(parser.getHeaderNames());
+            if (headers.isEmpty()) {
+                throw new IOException("CSV file has no headers");
+            }
+            // Validate headers
+            for (String header : headers) {
+                if (header == null || header.trim().isEmpty()) {
+                    throw new IOException("CSV contains empty or null headers");
+                }
+            }
+            return headers;
+        } catch (Exception e) {
+            throw new IOException("Failed to parse CSV headers: " + e.getMessage(), e);
+        }
+    }
+
+    public long ingestToClickHouse(String filePath, List<String> columns, String tableName, 
+                                   Connection clickHouseConn) throws IOException, SQLException {
+        File file = new File(filePath);
+        if (!file.exists()) {
+            throw new IOException("File not found: " + filePath);
+        }
+
+        List<List<String>> data = new ArrayList<>();
+        try (CSVParser parser = CSVParser.parse(file, StandardCharsets.UTF_8, 
+                CSVFormat.DEFAULT.withFirstRecordAsHeader())) {
+            for (CSVRecord record : parser) {
+                List<String> row = new ArrayList<>();
+                for (String col : columns) {
+                    try {
+                        row.add(record.get(col));
+                    } catch (IllegalArgumentException e) {
+                        throw new IOException("Column not found in CSV: " + col);
+                    }
+                }
+                data.add(row);
+            }
+        } catch (Exception e) {
+            throw new IOException("Failed to parse CSV data: " + e.getMessage(), e);
+        }
+
+        if (data.isEmpty()) {
+            throw new IOException("CSV file contains no data rows");
+        }
+
+        // Sanitize column names for ClickHouse
+        List<String> sanitizedColumns = columns.stream()
+                .map(col -> {
+                    if (col.matches("^[a-zA-Z0-9_]+$")) {
+                        return col;
+                    } else {
+                        return "`" + col.replace("`", "``") + "`";
+                    }
+                })
+                .collect(Collectors.toList());
+
+        String createTableSql = String.format("CREATE TABLE IF NOT EXISTS %s (%s) ENGINE = MergeTree() ORDER BY tuple()",
+                tableName, sanitizedColumns.stream()
+                        .map(c -> c + " String")
+                        .collect(Collectors.joining(",")));
+        try (PreparedStatement stmt = clickHouseConn.prepareStatement(createTableSql)) {
+            stmt.execute();
+        }
+
+        String insertSql = String.format("INSERT INTO %s (%s) VALUES (%s)",
+                tableName, String.join(",", sanitizedColumns),
+                columns.stream().map(c -> "?").collect(Collectors.joining(",")));
+        try (PreparedStatement stmt = clickHouseConn.prepareStatement(insertSql)) {
+            for (List<String> row : data) {
+                for (int i = 0; i < row.size(); i++) {
+                    stmt.setString(i + 1, row.get(i));
+                }
+                stmt.addBatch();
+            }
+            stmt.executeBatch();
+        }
+
+        return data.size();
+    }
+}
+
+
+package com.ingestion;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.context.annotation.Bean;
+import org.springframework.web.servlet.config.annotation.CorsRegistry;
+import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
+
+@SpringBootApplication
+public class IngestionApplication {
+    public static void main(String[] args) {
+        SpringApplication.run(IngestionApplication.class, args);
+    }
+
+    @Bean
+    public WebMvcConfigurer corsConfigurer() {
+        return new WebMvcConfigurer() {
+            @Override
+            public void addCorsMappings(CorsRegistry registry) {
+                registry.addMapping("/**")
+                        .allowedOrigins("http://localhost")
+                        .allowedMethods("GET", "POST", "PUT", "DELETE", "OPTIONS")
+                        .allowedHeaders("*")
+                        .allowCredentials(true);
+            }
+        };
+    }
+} const BASE_URL = 'http://localhost:8080/ingestion';
+
+async function updateUI() {
+    console.log('Updating UI');
+    const source = document.getElementById('source').value;
+    document.getElementById('clickhouse-config').style.display = source === 'clickhouse' ? 'block' : 'none';
+    document.getElementById('flatfile-config').style.display = source === 'flatfile' ? 'block' : 'none';
+    document.getElementById('join-config').style.display = source === 'clickhouse' ? 'block' : 'none';
+    document.getElementById('table-name').innerHTML = '';
+    document.getElementById('columns-list').innerHTML = '';
+    document.getElementById('preview-section').style.display = 'none';
+    document.getElementById('status').textContent = 'Ready';
+    document.getElementById('result').textContent = '';
+    document.getElementById('progress').style.width = '0%';
+    document.getElementById('output-label').textContent = source === 'flatfile' ? 'Target Table Name:' : 'Output File Path:';
+}
+
+async function connect() {
+    console.log('Connecting to ClickHouse');
+    document.getElementById('status').textContent = 'Connecting...';
+    try {
+        const response = await fetch(`${BASE_URL}/tables`);
+        if (!response.ok) throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+        document.getElementById('status').textContent = 'Connected';
+        showResult('Successfully connected to ClickHouse');
+    } catch (e) {
+        console.error('Connection error:', e);
+        document.getElementById('status').textContent = 'Error';
+        showResult('Connection failed: ' + e.message, true);
+    }
+}
+
+async function fetchTables() {
+    console.log('Fetching tables');
+    const source = document.getElementById('source').value;
+    if (source !== 'clickhouse') {
+        document.getElementById('status').textContent = 'Select ClickHouse source';
+        return;
+    }
+    try {
+        document.getElementById('status').textContent = 'Fetching tables...';
+        const response = await fetch(`${BASE_URL}/tables`);
+        if (!response.ok) throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+        const tables = await response.json();
+        const select = document.getElementById('table-name');
+        select.innerHTML = '<option value="">Select a table</option>' + 
+                          tables.map(t => `<option value="${t}">${t}</option>`).join('');
+        document.getElementById('status').textContent = 'Tables loaded';
+        showResult('Tables loaded successfully');
+    } catch (e) {
+        console.error('Fetch tables error:', e);
+        document.getElementById('status').textContent = 'Error';
+        showResult('Error fetching tables: ' + e.message, true);
+    }
+}
+
+async function fetchColumns() {
+    console.log('Fetching columns');
+    const source = document.getElementById('source').value;
+    const tableName = document.getElementById('table-name').value;
+    const fileUpload = document.getElementById('file-upload').files[0];
+    let url = `${BASE_URL}/columns?source=${source}`;
+    
+    document.getElementById('status').textContent = 'Fetching columns...';
+    try {
+        if (source === 'clickhouse') {
+            if (!tableName) {
+                document.getElementById('status').textContent = 'Error';
+                showResult('Please select a table', true);
+                return;
+            }
+            url += `&tableName=${tableName}`;
+            const response = await fetch(url);
+            if (!response.ok) throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+            const columns = await response.json();
+            console.log('Main table columns:', columns);
+            let allColumns = [{ table: tableName, columns }];
+            const joinTables = Array.from(document.querySelectorAll('#join-conditions > div'))
+                .map(div => div.querySelector('.join-table').value)
+                .filter(t => t);
+            if (joinTables.length > 0) {
+                const joinResponse = await fetch(`${BASE_URL}/columns/multiple`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(joinTables)
+                });
+                if (!joinResponse.ok) throw new Error(`HTTP ${joinResponse.status}: ${await joinResponse.text()}`);
+                const joinColumns = await joinResponse.json();
+                console.log('Join table columns:', joinColumns);
+                allColumns = allColumns.concat(Object.entries(joinColumns).map(([table, cols]) => ({ table, columns: cols })));
+            }
+            const list = document.getElementById('columns-list');
+            list.innerHTML = allColumns.map(tc => `
+                <div>
+                    <h4>${tc.table}</h4>
+                    ${tc.columns.map(c => `
+                        <label><input type="checkbox" data-table="${tc.table}" value="${c}" checked> ${c}</label><br>
+                    `).join('')}
+                </div>
+            `).join('');
+            document.getElementById('status').textContent = 'Columns loaded';
+            showResult('Columns loaded successfully');
+        } else if (source === 'flatfile') {
+            if (!fileUpload) {
+                document.getElementById('status').textContent = 'Error';
+                showResult('Please upload a CSV file', true);
+                return;
+            }
+            console.log('Uploading CSV:', fileUpload.name);
+            const formData = new FormData();
+            formData.append('file', fileUpload);
+            document.getElementById('status').textContent = 'Uploading file...';
+            const uploadResponse = await fetch(`${BASE_URL}/upload`, {
+                method: 'POST',
+                body: formData
+            });
+            if (!uploadResponse.ok) {
+                const errorText = await uploadResponse.text();
+                throw new Error(`File upload failed: ${errorText}`);
+            }
+            const filePath = await uploadResponse.text();
+            console.log('File uploaded to:', filePath);
+            url += `&filePath=${encodeURIComponent(filePath)}`;
+            const response = await fetch(url);
+            if (!response.ok) {
+                const errorText = await response.text();
+                throw new Error(`HTTP ${response.status}: ${errorText}`);
+            }
+            const columns = await response.json();
+            console.log('Columns received:', columns);
+            if (columns.some(col => /\s/.test(col))) {
+                console.warn('Warning: CSV headers contain spaces, which will be handled by the backend.');
+                showResult('Note: Headers with spaces detected. They will be sanitized for ClickHouse.', false);
+            }
+            const list = document.getElementById('columns-list');
+            list.innerHTML = columns.map(c => `
+                <label><input type="checkbox" value="${c}" checked> ${c}</label><br>
+            `).join('');
+            document.getElementById('status').textContent = 'Columns loaded';
+            showResult('Columns loaded successfully');
+        } else {
+            throw new Error('Invalid source');
+        }
+    } catch (e) {
+        console.error('Fetch columns error:', e);
+        document.getElementById('status').textContent = 'Error';
+        let errorMessage = e.message;
+        if (e.message.includes('Failed to fetch')) {
+            errorMessage = 'Failed to connect to backend. Check if backend is running and CORS is configured.';
+        }
+        showResult('Error fetching columns: ' + errorMessage, true);
+    }
+}
+
+function addJoinCondition() {
+    console.log('Adding join condition');
+    const container = document.getElementById('join-conditions');
+    const div = document.createElement('div');
+    div.innerHTML = `
+        <input type="text" class="join-table" placeholder="Join Table">
+        <input type="text" class="join-key" placeholder="Join Key">
+        <button onclick="this.parentElement.remove(); fetchColumns()">Remove</button>
+    `;
+    container.appendChild(div);
+}
+
+async function previewData() {
+    console.log('Previewing data');
+    document.getElementById('status').textContent = 'Fetching preview...';
+    const source = document.getElementById('source').value;
+    const tableName = document.getElementById('table-name').value;
+    const outputPath = document.getElementById('output-path').value;
+    const jwtToken = document.getElementById('ch-jwt').value;
+    let request;
+
+    if (source === 'clickhouse') {
+        const columns = Array.from(document.querySelectorAll('#columns-list input:checked'))
+                            .map(input => ({
+                                table: input.getAttribute('data-table'),
+                                column: input.value
+                            }));
+        if (!columns.length) {
+            document.getElementById('status').textContent = 'Error';
+            showResult('Please select at least one column', true);
+            return;
+        }
+        if (!tableName) {
+            document.getElementById('status').textContent = 'Error';
+            showResult('Please select a table', true);
+            return;
+        }
+        const joinConditions = Array.from(document.querySelectorAll('#join-conditions > div')).map(div => ({
+            table: div.querySelector('.join-table').value,
+            key: div.querySelector('.join-key').value
+        })).filter(c => c.table && c.key);
+        request = {
+            source,
+            tableName,
+            columns,
+            filePath: outputPath,
+            jwtToken,
+            joinConditions
+        };
+    } else if (source === 'flatfile') {
+        const flatFileColumns = Array.from(document.querySelectorAll('#columns-list input:checked'))
+                                    .map(input => input.value);
+        if (!flatFileColumns.length) {
+            document.getElementById('status').textContent = 'Error';
+            showResult('Please select at least one column', true);
+            return;
+        }
+        const fileUpload = document.getElementById('file-upload').files[0];
+        if (!fileUpload) {
+            document.getElementById('status').textContent = 'Error';
+            showResult('Please upload a CSV file', true);
+            return;
+        }
+        console.log('Uploading file for preview:', fileUpload.name);
+        const formData = new FormData();
+        formData.append('file', fileUpload);
+        try {
+            const uploadResponse = await fetch(`${BASE_URL}/upload`, {
+                method: 'POST',
+                body: formData
+            });
+            if (!uploadResponse.ok) throw new Error(`File upload failed: ${await uploadResponse.text()}`);
+            const filePath = await uploadResponse.text();
+            request = {
+                source,
+                tableName: outputPath,
+                flatFileColumns,
+                filePath,
+                jwtToken,
+                joinConditions: []
+            };
+        } catch (e) {
+            console.error('Upload error:', e);
+            document.getElementById('status').textContent = 'Error';
+            showResult('File upload failed: ' + e.message, true);
+            return;
+        }
+    } else {
+        document.getElementById('status').textContent = 'Error';
+        showResult('Invalid source', true);
+        return;
+    }
+
+    console.log('Preview request:', JSON.stringify(request)); // Debug log
+    try {
+        const response = await fetch(`${BASE_URL}/preview`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(request)
+        });
+        if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(errorText);
+        }
+        const rows = await response.json();
+        console.log('Preview response:', rows); // Debug log
+        displayPreview(rows, source === 'clickhouse' ? request.columns.map(c => c.column) : request.flatFileColumns);
+        document.getElementById('status').textContent = 'Preview loaded';
+        showResult('Preview loaded successfully');
+    } catch (e) {
+        console.error('Preview error:', e);
+        document.getElementById('status').textContent = 'Error';
+        showResult('Preview failed: ' + e.message, true);
+    }
+}
+
+function displayPreview(rows, columns) {
+    console.log('Displaying preview:', rows);
+    const headers = document.getElementById('preview-headers');
+    const body = document.getElementById('preview-body');
+    headers.innerHTML = '<tr>' + columns.map(c => `<th>${c}</th>`).join('') + '</tr>';
+    body.innerHTML = rows.length > 0 ?
+        rows.map(row => `
+            <tr>${columns.map(c => `<td>${row[c] != null ? row[c] : ''}</td>`).join('')}</tr>
+        `).join('') :
+        '<tr><td colspan="' + columns.length + '">No data available</td></tr>';
+    document.getElementById('preview-section').style.display = 'block';
+}
+
+async function startIngestion() {
+    console.log('Starting ingestion');
+    document.getElementById('status').textContent = 'Preparing ingestion...';
+    document.getElementById('progress').style.width = '0%';
+    const source = document.getElementById('source').value;
+    const tableName = source === 'clickhouse' ? document.getElementById('table-name').value : document.getElementById('output-path').value;
+    const outputPath = document.getElementById('output-path').value;
+    const jwtToken = document.getElementById('ch-jwt').value;
+    let request;
+
+    if (source === 'clickhouse') {
+        const columns = Array.from(document.querySelectorAll('#columns-list input:checked'))
+                            .map(input => ({
+                                table: input.getAttribute('data-table'),
+                                column: input.value
+                            }));
+        if (!columns.length) {
+            document.getElementById('status').textContent = 'Error';
+            showResult('Please select at least one column', true);
+            return;
+        }
+        if (!tableName) {
+            document.getElementById('status').textContent = 'Error';
+            showResult('Please select a source table', true);
+            return;
+        }
+        if (!outputPath) {
+            document.getElementById('status').textContent = 'Error';
+            showResult('Please enter an output file path', true);
+            return;
+        }
+        const joinConditions = Array.from(document.querySelectorAll('#join-conditions > div')).map(div => ({
+            table: div.querySelector('.join-table').value,
+            key: div.querySelector('.join-key').value
+        })).filter(c => c.table && c.key);
+        request = {
+            source,
+            tableName,
+            columns,
+            filePath: outputPath,
+            jwtToken,
+            joinConditions
+        };
+    } else if (source === 'flatfile') {
+        const flatFileColumns = Array.from(document.querySelectorAll('#columns-list input:checked'))
+                                    .map(input => input.value);
+        if (!flatFileColumns.length) {
+            document.getElementById('status').textContent = 'Error';
+            showResult('Please select at least one column', true);
+            return;
+        }
+        if (!tableName) {
+            document.getElementById('status').textContent = 'Error';
+            showResult('Please enter a target table name', true);
+            return;
+        }
+        const fileUpload = document.getElementById('file-upload').files[0];
+        if (!fileUpload) {
+            document.getElementById('status').textContent = 'Error';
+            showResult('Please upload a CSV file', true);
+            return;
+        }
+        console.log('Uploading file:', fileUpload.name);
+        const formData = new FormData();
+        formData.append('file', fileUpload);
+        try {
+            document.getElementById('status').textContent = 'Uploading file...';
+            document.getElementById('progress').style.width = '20%';
+            const uploadResponse = await fetch(`${BASE_URL}/upload`, {
+                method: 'POST',
+                body: formData
+            });
+            if (!uploadResponse.ok) throw new Error(`File upload failed: ${await uploadResponse.text()}`);
+            const filePath = await uploadResponse.text();
+            console.log('File uploaded, path:', filePath);
+            request = {
+                source,
+                tableName,
+                flatFileColumns,
+                filePath,
+                jwtToken,
+                joinConditions: []
+            };
+        } catch (e) {
+            console.error('Upload error:', e);
+            document.getElementById('status').textContent = 'Error';
+            showResult('File upload failed: ' + e.message, true);
+            return;
+        }
+    } else {
+        document.getElementById('status').textContent = 'Error';
+        showResult('Invalid source', true);
+        return;
+    }
+
+    console.log('Ingestion request:', JSON.stringify(request)); // Debug log
+    document.getElementById('status').textContent = 'Ingesting...';
+    document.getElementById('progress').style.width = '50%';
+
+    try {
+        const response = await fetch(`${BASE_URL}/start`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(request)
+        });
+        if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(`Server error: ${errorText}`);
+        }
+        const result = await response.text();
+        console.log('Ingestion result:', result);
+        document.getElementById('status').textContent = 'Completed';
+        document.getElementById('progress').style.width = '100%';
+        showResult(source === 'clickhouse' ? `CSV created successfully: ${result}` : result);
+    } catch (e) {
+        console.error('Ingestion error:', e);
+        document.getElementById('status').textContent = 'Error';
+        let errorMessage = e.message;
+        if (e.message.includes('DB::Exception')) {
+            errorMessage = 'ClickHouse error - check table names, columns, or join conditions';
+        }
+        showResult('Ingestion failed: ' + errorMessage, true);
+    }
+}
+
+function showResult(message, isError = false) {
+    console.log('Showing result:', message);
+    const resultDiv = document.getElementById('result');
+    resultDiv.textContent = message;
+    resultDiv.className = isError ? 'error' : '';
+} <!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Data Ingestion Tool</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <h1>Data Ingestion Tool</h1>
+    <div class="container">
+        <div class="section">
+            <h2>Source Selection</h2>
+            <label>Source:</label>
+            <select id="source" onchange="updateUI()">
+                <option value="clickhouse">ClickHouse</option>
+                <option value="flatfile">Flat File</option>
+            </select>
+            <div id="clickhouse-config">
+                <h3>ClickHouse Connection</h3>
+                <label>Host:</label><input type="text" id="ch-host" value="localhost"><br>
+                <label>Port:</label><input type="text" id="ch-port" value="8123"><br>
+                <label>Database:</label><input type="text" id="ch-database" value="default"><br>
+                <label>User:</label><input type="text" id="ch-user" value="default"><br>
+                <label>JWT Token:</label><input type="text" id="ch-jwt" placeholder="Optional"><br>
+                <button onclick="connect()">Connect</button>
+            </div>
+            <div id="flatfile-config" style="display:none;">
+                <h3>Flat File Source</h3>
+                <label>CSV File:</label><input type="file" id="file-upload" accept=".csv"><br>
+                <label>Delimiter:</label><input type="text" id="delimiter" value=","><br>
+            </div>
+        </div>
+        <div class="section">
+            <h2>Data Selection</h2>
+            <label>Table/File:</label>
+            <select id="table-name"></select>
+            <button onclick="fetchTables()">Load Tables</button><br>
+            <div id="join-config" style="display:none;">
+                <h3>Join Conditions</h3>
+                <div id="join-conditions"></div>
+                <button onclick="addJoinCondition()">Add Join</button>
+            </div>
+        </div>
+        <div class="section">
+            <h2>Columns</h2>
+            <button onclick="fetchColumns()">Load Columns</button>
+            <div id="columns-list"></div>
+        </div>
+        <div class="section">
+            <h2>Target</h2>
+            <label>Output Path/Table:</label>
+            <input type="text" id="output-path" placeholder="e.g., output.csv or table_name">
+        </div>
+        <div class="section">
+            <h2>Actions</h2>
+            <button onclick="previewData()">Preview Data</button>
+            <button onclick="startIngestion()">Start Ingestion</button>
+            <div id="progress-bar">
+                <div id="progress"></div>
+            </div>
+        </div>
+        <div class="section">
+            <h2>Status</h2>
+            <div id="status">Ready</div>
+        </div>
+        <div class="section">
+            <h2>Result</h2>
+            <div id="result"></div>
+        </div>
+        <div class="section" id="preview-section" style="display:none;">
+            <h2>Data Preview</h2>
+            <table id="preview-table">
+                <thead id="preview-headers"></thead>
+                <tbody id="preview-body"></tbody>
+            </table>
+        </div>
+    </div>
+    <script src="script.js"></script>
+</body>
+</html>
+understand this code and help me perform join operation  note single table converted to csv is wokring greatly just join isnt working when on clickhouse service note that when switched to flatfile everyhting is working very fine just remove data selection part when in flatfile service/source
+
+Preview failed: Preview failed: Unknown table in column selection: departments when it shows column it is giving error for other table when trying to join
+
+ailed to load resource: the server responded with a status of 400 ()Understand this error
+script.js:265 Preview error: Error: Preview failed: Unknown table in column selection: departments
+    at previewData (script.js:257:19)
+previewData @ script.js:265Understand this error
+script.js:410 Showing result: Preview failed
