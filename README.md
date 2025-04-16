@@ -26,6 +26,6 @@ to close backend press ctrl+c 3 times
 ---------------------------------------------
 to check if tables are being created on your clickhouse 
 write thise command:-
-docker-compose up --build -d
-docker exec -it clickhouse clickhouse-client
+1) docker-compose up --build -d
+2) docker exec -it clickhouse clickhouse-client
 ->>all your tables will be formed in default database
