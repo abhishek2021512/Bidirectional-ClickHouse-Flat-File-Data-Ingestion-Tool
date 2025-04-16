@@ -23,6 +23,10 @@ to Start this project foolow these steps:-
 the above command will start your backend
 8) go to google and type: - http://localhost:80 your website will start
 to close backend press ctrl+c 3 times
+
+->>  before using clickhouse service add simple csv files provided in uploads which can help you make tables
+->> for noe join condition has some problem rest everything is working
+
 ---------------------------------------------
 to check if tables are being created on your clickhouse 
 write thise command:-
