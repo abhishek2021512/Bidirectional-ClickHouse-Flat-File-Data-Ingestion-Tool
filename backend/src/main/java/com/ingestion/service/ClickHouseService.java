@@ -33,27 +33,27 @@ public class ClickHouseService {
     }
 
     // public List<String> getTables() throws SQLException {
-    // try (Connection conn = getConnection(null);
-    // Statement stmt = conn.createStatement();
-    // ResultSet rs = stmt.executeQuery("SHOW TABLES")) {
-    // List<String> tables = new ArrayList<>();
-    // while (rs.next()) {
-    // tables.add(rs.getString(1));
-    // }
-    // return tables;
-    // }
+    //     try (Connection conn = getConnection(null);
+    //          Statement stmt = conn.createStatement();
+    //          ResultSet rs = stmt.executeQuery("SHOW TABLES")) {
+    //         List<String> tables = new ArrayList<>();
+    //         while (rs.next()) {
+    //             tables.add(rs.getString(1));
+    //         }
+    //         return tables;
+    //     }
     // }
 
     // public List<String> getColumns(String tableName) throws SQLException {
-    // try (Connection conn = getConnection(null);
-    // Statement stmt = conn.createStatement();
-    // ResultSet rs = stmt.executeQuery("DESCRIBE TABLE " + tableName)) {
-    // List<String> columns = new ArrayList<>();
-    // while (rs.next()) {
-    // columns.add(rs.getString("name"));
-    // }
-    // return columns;
-    // }
+    //     try (Connection conn = getConnection(null);
+    //          Statement stmt = conn.createStatement();
+    //          ResultSet rs = stmt.executeQuery("DESCRIBE TABLE " + tableName)) {
+    //         List<String> columns = new ArrayList<>();
+    //         while (rs.next()) {
+    //             columns.add(rs.getString("name"));
+    //         }
+    //         return columns;
+    //     }
     // }
 
     public Map<String, List<String>> getColumnsForMultipleTables(List<String> tables) throws SQLException {
@@ -66,58 +66,60 @@ public class ClickHouseService {
 
     public String buildQuery(String mainTable, List<String> columns, List<JoinCondition> joinConditions) {
         StringBuilder query = new StringBuilder("SELECT ");
-
+        
         // Handle column selection from multiple tables
         List<String> qualifiedColumns = columns.stream()
-                .map(col -> {
-                    if (col.contains(".")) {
-                        String[] parts = col.split("\\.");
-                        return sanitize(parts[0]) + "." + sanitize(parts[1]);
-                    }
-                    return sanitize(mainTable) + "." + sanitize(col);
-                })
-                .collect(Collectors.toList());
-
+            .map(col -> {
+                if (col.contains(".")) {
+                    String[] parts = col.split("\\.");
+                    return sanitize(parts[0]) + "." + sanitize(parts[1]);
+                }
+                return sanitize(mainTable) + "." + sanitize(col);
+            })
+            .collect(Collectors.toList());
+        
         query.append(String.join(", ", qualifiedColumns))
-                .append(" FROM ").append(sanitize(mainTable));
-
+             .append(" FROM ").append(sanitize(mainTable));
+    
         for (JoinCondition jc : joinConditions) {
             query.append(" ")
-                    .append(jc.getjoinType()).append(" JOIN ")
-                    .append(sanitize(jc.getjoinTable()))
-                    .append(" ON ")
-                    .append(sanitize(jc.getMainTable())).append(".").append(sanitize(jc.getmaincolumn()))
-                    .append(" = ")
-                    .append(sanitize(jc.getjoinTable())).append(".").append(sanitize(jc.getjoincolumn()));
+                 .append(jc.getjoinType()).append(" JOIN ")
+                 .append(sanitize(jc.getjoinTable()))
+                 .append(" ON ")
+                 .append(sanitize(jc.getMainTable())).append(".").append(sanitize(jc.getmaincolumn()))
+                 .append(" = ")
+                 .append(sanitize(jc.getjoinTable())).append(".").append(sanitize(jc.getjoincolumn()));
         }
-
+        
         return query.toString();
     }
-
+    
     private String sanitize(String identifier) {
-        return identifier.matches("^[a-zA-Z0-9_]+$") ? identifier : "`" + identifier.replace("`", "``") + "`";
+        return identifier.matches("^[a-zA-Z0-9_]+$") ? 
+               identifier : 
+               "`" + identifier.replace("`", "``") + "`";
     }
 
-    public long executeIngestion(String tableName, List<String> columns, String outputPath,
-            List<JoinCondition> joinConditions) throws SQLException {
+    public long executeIngestion(String tableName, List<String> columns, String outputPath, 
+                                List<JoinCondition> joinConditions) throws SQLException {
         String query = buildQuery(tableName, columns, joinConditions);
         try (Connection conn = getConnection(null);
-                Statement stmt = conn.createStatement();
-                ResultSet rs = stmt.executeQuery(query)) {
-
+             Statement stmt = conn.createStatement();
+             ResultSet rs = stmt.executeQuery(query)) {
+            
             try (java.io.PrintWriter writer = new java.io.PrintWriter(outputPath)) {
                 ResultSetMetaData metaData = rs.getMetaData();
                 int columnCount = metaData.getColumnCount();
-
+                
                 // Get column names from result set metadata
                 List<String> outputColumns = new ArrayList<>();
                 for (int i = 1; i <= columnCount; i++) {
                     outputColumns.add(metaData.getColumnName(i));
                 }
-
+                
                 // Write CSV header using actual column names from query result
                 writer.println(String.join(",", outputColumns));
-
+                
                 long count = 0;
                 while (rs.next()) {
                     List<String> values = new ArrayList<>();
@@ -143,30 +145,30 @@ public class ClickHouseService {
             }
         }
     }
-
     // In ClickHouseService.java
-    public List<String> getTables() throws SQLException {
-        try (Connection conn = getConnection(null);
-                Statement stmt = conn.createStatement();
-                ResultSet rs = stmt.executeQuery("SHOW TABLES")) {
-            List<String> tables = new ArrayList<>();
-            while (rs.next()) {
-                tables.add(rs.getString(1));
-            }
-            return tables;
+public List<String> getTables() throws SQLException {
+    try (Connection conn = getConnection(null);
+         Statement stmt = conn.createStatement();
+         ResultSet rs = stmt.executeQuery("SHOW TABLES")) {
+        List<String> tables = new ArrayList<>();
+        while (rs.next()) {
+            tables.add(rs.getString(1));
         }
+        return tables;
     }
+}
 
-    public List<String> getColumns(String tableName) throws SQLException {
-        try (Connection conn = getConnection(null);
-                Statement stmt = conn.createStatement();
-                ResultSet rs = stmt.executeQuery(
-                        "SELECT name FROM system.columns WHERE table = '" + tableName + "'")) {
-            List<String> columns = new ArrayList<>();
-            while (rs.next()) {
-                columns.add(rs.getString("name"));
-            }
-            return columns;
+public List<String> getColumns(String tableName) throws SQLException {
+    try (Connection conn = getConnection(null);
+         Statement stmt = conn.createStatement();
+         ResultSet rs = stmt.executeQuery(
+             "SELECT name FROM system.columns WHERE table = '" + tableName + "'"
+         )) {
+        List<String> columns = new ArrayList<>();
+        while (rs.next()) {
+            columns.add(rs.getString("name"));
         }
+        return columns;
     }
+}
 }
